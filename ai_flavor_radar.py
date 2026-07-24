@@ -142,6 +142,15 @@ class FlavorRadar:
             global RULES_DIR
             RULES_DIR = Path(custom_rules_dir)
         self.rules = load_rules(mode)
+        self._apply_mode_overrides(mode)
+
+    def _apply_mode_overrides(self, mode: str):
+        """Adjust rule severity by mode (same rule, different weight per scene)"""
+        if mode == "bid":
+            for rule in self.rules:
+                # C03 buzzwords may be normal industry jargon in bid context
+                if rule["id"] == "C03":
+                    rule["severity"] = "low"
 
     def scan(self, text: str, file_path: str = "<stdin>") -> ScanResult:
         """扫描文本，返回结果"""
@@ -155,10 +164,61 @@ class FlavorRadar:
 
         for i, line in enumerate(lines, 1):
             for rule in self.rules:
+                # C05 cross-paragraph check: skip per-line, handle separately
+                if rule["id"] == "C05":
+                    continue
                 hits = self._check_rule(rule, line, i)
                 result.hits.extend(hits)
 
+        # C05: full-text cross-paragraph detection
+        for rule in self.rules:
+            if rule["id"] == "C05":
+                c05_hits = self._check_c05_cross_paragraph(rule, lines)
+                result.hits.extend(c05_hits)
+
         return result
+
+    def _check_c05_cross_paragraph(self, rule: Dict, lines: List[str]) -> List[Hit]:
+        """C05 cross-paragraph detection: count list-symbol groups across paragraphs.
+        Same symbol group used in >2 paragraphs = template repetition."""
+        hits = []
+
+        symbol_groups = [
+            ("\u2460\u2461\u2462\u2463\u2464", [r"\u2460", r"\u2461", r"\u2462"]),
+            ("\uff081\uff09\uff082\uff09\uff083\uff09", [r"\uff081\uff09", r"\uff082\uff09", r"\uff083\uff09"]),
+            ("\u7b2c\u4e00\u7b2c\u4e8c\u7b2c\u4e09", [r"\u7b2c\u4e00[\uff0c,\u3001]", r"\u7b2c\u4e8c[\uff0c,\u3001]", r"\u7b2c\u4e09[\uff0c,\u3001]"]),
+            ("\u9996\u5148\u5176\u6b21\u518d\u6b21", [r"\u9996\u5148[\uff0c,]", r"\u5176\u6b21[\uff0c,]", r"\u518d\u6b21[\uff0c,]"]),
+        ]
+
+        for group_name, patterns in symbol_groups:
+            paragraph_hits = []
+            for i, line in enumerate(lines, 1):
+                stripped = line.strip()
+                if not stripped or stripped.startswith("```"):
+                    continue
+                matched_in_line = []
+                for p in patterns:
+                    if re.search(p, line):
+                        matched_in_line.append(p)
+                if len(matched_in_line) >= 2:
+                    paragraph_hits.append((i, line.rstrip(), matched_in_line))
+
+            if len(paragraph_hits) > 2:
+                for line_num, full_line, matched in paragraph_hits:
+                    hits.append(Hit(
+                        rule_id=rule["id"],
+                        rule_name=rule["name"],
+                        category=rule["category"],
+                        severity=rule["severity"],
+                        line_num=line_num,
+                        col_start=0,
+                        col_end=len(full_line),
+                        matched_text=f"\u8de8\u6bb5\u91cd\u590d\u4f7f\u7528{group_name}\uff08\u5168\u6587\u5171{len(paragraph_hits)}\u6bb5\u4f7f\u7528\uff09",
+                        full_line=full_line,
+                        suggestion=rule.get("suggestion", ""),
+                    ))
+
+        return hits
 
     def _check_rule(self, rule: Dict, line: str, line_num: int) -> List[Hit]:
         """检查单行是否命中规则"""

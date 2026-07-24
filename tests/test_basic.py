@@ -63,7 +63,7 @@ def test_empty_text():
 def test_clean_text():
     """测试干净文本（无AI味）"""
     radar = FlavorRadar(mode="bid")
-    text = "本项目配置5名护理员，分两班次轮换，每班12小时。人员均持有养老护理员证书。"
+    text = "本项目配置5名驻场人员，分两班次轮换，每班12小时。人员均持有相关岗位证书。"
     result = radar.scan(text)
     # 干净文本应该命中很少或零命中
     assert result.hit_count <= 1, f"干净文本命中过多: {result.hit_count} 条"

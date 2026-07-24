@@ -21,14 +21,14 @@
 - ✅ 标注**AI 味类型**（骈文 / 套话 / 对仗 / 空洞承诺……）
 - ✅ 给出**修改方向建议**，但不替你改
 - ✅ 区分场景：投标方案模式 vs 自媒体模式，不同场景规则不同
-- ✅ **行业术语白名单**：投标方案里的「服务质量」「管理体系」不算 AI 味
+- ✅ **场景区分**：投标方案和自媒体用不同规则集，不误伤行业术语
 
 ## 快速开始
 
 ### 安装
 
 ```bash
-git clone https://gitee.com/your-username/ai-flavor-radar.git
+git clone https://gitee.com/fenglinhuoshanmen/ai-flavor-radar.git
 cd ai-flavor-radar
 ```
 
@@ -97,7 +97,7 @@ python ai_flavor_radar.py your_file.txt --mode bid --no-color
 | B03 | 空洞承诺（「建立完善的管理机制」但没说怎么建） |
 | B04 | 长难句（单句超过 60 字 / 3 个以上逗号 / 3 个以上「的」） |
 | B05 | 过度结构化（连续「首先…其次…再次…最后」） |
-| B06 | 行业术语误判白名单（投标方案中「服务质量」「管理体系」不算 AI 味） |
+| B06 | 万能定语堆叠（「科学合理有效的管理」「高效运转协同」等形容词堆砌凑字数） |
 
 ### 自媒体专项（social.json）
 
