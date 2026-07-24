@@ -477,7 +477,7 @@ def format_markdown_report(result: ScanResult) -> str:
 
 def _default_docx_output(input_path: str) -> str:
     """生成默认输出文件名"""
-    if input_path == "<stdin>":
+    if input_path == "<stdin>" or not input_path:
         return "ai_flavor_radar_output.docx"
     base, ext = os.path.splitext(input_path)
     return f"{base}_AI味雷达修订.docx"
@@ -633,7 +633,7 @@ def _insert_track_change(paragraph, matched_text: str, hit: 'Hit',
     del_rpr.append(del_strike)
     del_run.append(del_rpr)
     
-    del_t = OxmlElement('w:t')
+    del_t = OxmlElement('w:delText')
     del_t.text = matched_text
     del_t.set(qn('xml:space'), 'preserve')
     del_run.append(del_t)
@@ -656,8 +656,10 @@ def _insert_track_change(paragraph, matched_text: str, hit: 'Hit',
     ins_rpr.append(ins_underline)
     ins_run.append(ins_rpr)
     
+    # 截断建议文字，避免行内过长
+    suggestion_short = hit.suggestion[:50] + '...' if len(hit.suggestion) > 50 else hit.suggestion
     ins_t = OxmlElement('w:t')
-    ins_t.text = f' [{hit.rule_id}建议: {hit.suggestion}] '
+    ins_t.text = f' [{hit.rule_id}: {suggestion_short}] '
     ins_t.set(qn('xml:space'), 'preserve')
     ins_run.append(ins_t)
     ins_elem.append(ins_run)
