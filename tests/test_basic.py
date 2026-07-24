@@ -178,6 +178,30 @@ def test_rule_structure():
     print("✅ test_rule_structure 通过")
 
 
+def test_docx_output():
+    """测试Word修订标记输出"""
+    output_path = "/tmp/test_ai_radar_docx.docx"
+    result = subprocess.run(
+        [sys.executable, os.path.join(PROJECT_ROOT, "ai_flavor_radar.py"),
+         os.path.join(PROJECT_ROOT, "examples", "sample_bid.txt"),
+         "--mode", "bid", "--format", "docx", "-o", output_path],
+        capture_output=True, text=True
+    )
+    assert result.returncode == 0, f"脚本执行失败: {result.stderr}"
+    assert os.path.exists(output_path), "docx文件未生成"
+    
+    # 验证docx内容
+    from docx import Document
+    doc = Document(output_path)
+    xml_content = doc.element.xml
+    assert 'w:del' in xml_content, "docx中缺少删除标记(w:del)"
+    assert 'w:ins' in xml_content, "docx中缺少插入标记(w:ins)"
+    
+    # 清理
+    os.remove(output_path)
+    print("✅ test_docx_output 通过")
+
+
 def run_all():
     """运行所有测试"""
     print("=" * 50)
@@ -196,6 +220,7 @@ def run_all():
         test_stdin_input,
         test_no_duplicate_patterns,
         test_rule_structure,
+        test_docx_output,
     ]
 
     passed = 0

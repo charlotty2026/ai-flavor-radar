@@ -2,17 +2,22 @@
 """
 AI味雷达 (AI Flavor Radar)
 ==========================
-只标不改的AI文风检测工具。区分投标方案和自媒体两种场景，
+AI文风检测工具。区分投标方案和自媒体两种场景，
 保留专业术语和书面语，精准定位AI模板腔。
 
+支持两种输出模式：
+  - 文本/JSON/Markdown报告（检测+建议）
+  - Word文档修订标记（直接在原文上标修订，逐条接受/拒绝）
+
 用法:
-    python ai_flavor_radar.py <文件路径> [--mode bid|social] [--format text|json|markdown]
+    python ai_flavor_radar.py <文件路径> [--mode bid|social] [--format text|json|markdown|docx]
     python ai_flavor_radar.py --stdin [--mode bid|social]  # 从stdin读取
     cat 文件.md | python ai_flavor_radar.py --stdin --mode bid
 
 示例:
     python ai_flavor_radar.py 投标方案.md --mode bid
     python ai_flavor_radar.py 公众号文章.md --mode social --format markdown
+    python ai_flavor_radar.py 方案.docx --mode bid --format docx -o 方案_修订.docx
     echo "值得注意的是，我们将全面提升服务质量" | python ai_flavor_radar.py --stdin --mode bid
 
 License: MIT
@@ -24,8 +29,9 @@ import os
 import re
 import sys
 from dataclasses import dataclass, field, asdict
+from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 
 # ============================================================
@@ -466,8 +472,199 @@ def format_markdown_report(result: ScanResult) -> str:
 
 
 # ============================================================
-# 主入口
+# Word文档修订标记输出
 # ============================================================
+
+def _default_docx_output(input_path: str) -> str:
+    """生成默认输出文件名"""
+    if input_path == "<stdin>":
+        return "ai_flavor_radar_output.docx"
+    base, ext = os.path.splitext(input_path)
+    return f"{base}_AI味雷达修订.docx"
+
+
+def _generate_docx_with_track_changes(result: 'ScanResult', text: str, output_path: str):
+    """生成带Word修订标记的docx文件。
+    
+    每条命中规则在原文对应位置生成一条修订标记：
+    - w:del 标记删除命中文字
+    - w:ins 插入修改建议（带规则编号）
+    用户在Word中右键接受/拒绝即可。
+    """
+    try:
+        from docx import Document
+        from docx.shared import Pt, RGBColor
+        from docx.oxml.ns import qn
+        from docx.oxml import OxmlElement
+    except ImportError:
+        print("错误: 生成docx需要python-docx，请运行 pip install python-docx", file=sys.stderr)
+        sys.exit(1)
+
+    doc = Document()
+    
+    # 设置默认字体
+    style = doc.styles['Normal']
+    font = style.font
+    font.name = '宋体'
+    font.size = Pt(10.5)
+    style.element.rPr.rFonts.set(qn('w:eastAsia'), '宋体')
+    
+    # 标题
+    title = doc.add_heading('AI味雷达修订报告', level=1)
+    title.alignment = 1  # 居中
+    
+    # 概要信息
+    info = doc.add_paragraph()
+    info.add_run(f'评分: {result.score}/100 {result.grade}  |  '
+                 f'命中: {result.hit_count}条 '
+                 f'(致命{result.fatal_count}/高{result.high_count}/'
+                 f'中{result.medium_count}/低{result.low_count})').bold = True
+    
+    doc.add_paragraph('以下为原文，AI味雷达检测到的问题已用Word修订标记标出。'
+                      '请在Word中右键「接受」或「拒绝」每条修订建议。')
+    
+    # 分割线
+    doc.add_paragraph('—' * 30)
+    
+    # 按行处理原文
+    lines = text.split('\n')
+    
+    # 按行号分组命中
+    hits_by_line: Dict[int, List['Hit']] = {}
+    for hit in result.hits:
+        if hit.line_num not in hits_by_line:
+            hits_by_line[hit.line_num] = []
+        hits_by_line[hit.line_num].append(hit)
+    
+    # 每行内按col_start排序（从后往前处理，避免位置偏移）
+    for line_num, line_hits in hits_by_line.items():
+        line_hits.sort(key=lambda h: h.col_start, reverse=True)
+    
+    rev_id = [0]  # 修订ID计数器
+    now = datetime.now().strftime('%Y-%m-%dT%H:%M:%SZ')
+    AUTHOR = 'AI味雷达'
+    
+    for i, line in enumerate(lines, 1):
+        p = doc.add_paragraph()
+        
+        if i not in hits_by_line:
+            # 无命中，直接写入原文
+            p.add_run(line)
+            continue
+        
+        # 有命中：从后往前插入修订标记
+        modified_line = line
+        line_hit_list = hits_by_line[i]
+        
+        # 记录各段文字和修订标记的顺序
+        segments = []  # [(text, hit_or_None)]
+        cursor = 0
+        
+        # 按col_start正向排序，分段
+        sorted_hits = sorted(line_hit_list, key=lambda h: h.col_start)
+        
+        for hit in sorted_hits:
+            # 命中前的正常文字
+            if hit.col_start > cursor:
+                segments.append((line[cursor:hit.col_start], None))
+            # 命中文字+修订建议
+            segments.append((line[hit.col_start:hit.col_end], hit))
+            cursor = hit.col_end
+        
+        # 末尾剩余文字
+        if cursor < len(line):
+            segments.append((line[cursor:], None))
+        
+        # 渲染segments到段落
+        for seg_text, hit in segments:
+            if hit is None:
+                p.add_run(seg_text)
+            else:
+                _insert_track_change(p, seg_text, hit, rev_id, now, AUTHOR)
+    
+    # 末尾添加检测详情汇总
+    doc.add_paragraph('')
+    doc.add_paragraph('—' * 30)
+    detail_heading = doc.add_heading('检测详情', level=2)
+    
+    severity_order = ["fatal", "high", "medium", "low"]
+    severity_label = {"fatal": "🔴 致命", "high": "🟡 高危", 
+                      "medium": "🟠 中危", "low": "⚪ 低危"}
+    
+    for sev in severity_order:
+        sev_hits = [h for h in result.hits if h.severity == sev]
+        if not sev_hits:
+            continue
+        
+        doc.add_heading(severity_label[sev], level=3)
+        for hit in sev_hits:
+            item = doc.add_paragraph(style='List Bullet')
+            item.add_run(f'第{hit.line_num}行 [{hit.rule_id}] {hit.rule_name}').bold = True
+            item.add_run(f'\n原文: {hit.matched_text}')
+            item.add_run(f'\n建议: {hit.suggestion}')
+    
+    doc.save(output_path)
+
+
+def _insert_track_change(paragraph, matched_text: str, hit: 'Hit', 
+                          rev_id: list, timestamp: str, author: str):
+    """在段落中插入一条Track Change修订标记。
+    
+    效果：删除命中文字（红色删除线），插入建议文字（下划线）。
+    """
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    
+    p_element = paragraph._element
+    
+    # 1. 创建删除标记 w:del
+    del_elem = OxmlElement('w:del')
+    rev_id[0] += 1
+    del_elem.set(qn('w:id'), str(rev_id[0]))
+    del_elem.set(qn('w:author'), author)
+    del_elem.set(qn('w:date'), timestamp)
+    
+    del_run = OxmlElement('w:r')
+    del_rpr = OxmlElement('w:rPr')
+    del_color = OxmlElement('w:color')
+    del_color.set(qn('w:val'), 'FF0000')
+    del_strike = OxmlElement('w:strike')
+    del_rpr.append(del_color)
+    del_rpr.append(del_strike)
+    del_run.append(del_rpr)
+    
+    del_t = OxmlElement('w:t')
+    del_t.text = matched_text
+    del_t.set(qn('xml:space'), 'preserve')
+    del_run.append(del_t)
+    del_elem.append(del_run)
+    
+    # 2. 创建插入标记 w:ins（建议文字）
+    ins_elem = OxmlElement('w:ins')
+    rev_id[0] += 1
+    ins_elem.set(qn('w:id'), str(rev_id[0]))
+    ins_elem.set(qn('w:author'), author)
+    ins_elem.set(qn('w:date'), timestamp)
+    
+    ins_run = OxmlElement('w:r')
+    ins_rpr = OxmlElement('w:rPr')
+    ins_color = OxmlElement('w:color')
+    ins_color.set(qn('w:val'), '0066CC')
+    ins_underline = OxmlElement('w:u')
+    ins_underline.set(qn('w:val'), 'single')
+    ins_rpr.append(ins_color)
+    ins_rpr.append(ins_underline)
+    ins_run.append(ins_rpr)
+    
+    ins_t = OxmlElement('w:t')
+    ins_t.text = f' [{hit.rule_id}建议: {hit.suggestion}] '
+    ins_t.set(qn('xml:space'), 'preserve')
+    ins_run.append(ins_t)
+    ins_elem.append(ins_run)
+    
+    # 插入到段落末尾
+    p_element.append(del_elem)
+    p_element.append(ins_elem)
 
 def main():
     parser = argparse.ArgumentParser(
@@ -485,8 +682,9 @@ def main():
     parser.add_argument("--stdin", action="store_true", help="从标准输入读取文本")
     parser.add_argument("--mode", choices=["bid", "social"], default="bid",
                         help="检测模式: bid=投标方案(默认), social=自媒体")
-    parser.add_argument("--format", choices=["text", "json", "markdown"], default="text",
-                        help="输出格式: text(默认), json, markdown")
+    parser.add_argument("--format", choices=["text", "json", "markdown", "docx"], default="text",
+                        help="输出格式: text(默认), json, markdown, docx(Word修订标记)")
+    parser.add_argument("-o", "--output", help="输出文件路径（docx格式必填）")
     parser.add_argument("--no-color", action="store_true", help="禁用终端颜色")
     parser.add_argument("--rules-dir", help="自定义规则目录路径")
 
@@ -500,8 +698,19 @@ def main():
         if not os.path.exists(args.file):
             print(f"错误: 文件不存在: {args.file}", file=sys.stderr)
             sys.exit(1)
-        with open(args.file, "r", encoding="utf-8") as f:
-            text = f.read()
+
+        # docx格式：如果输入是docx，先提取文本
+        if args.file.lower().endswith(".docx"):
+            try:
+                from docx import Document as DocxDocument
+                doc = DocxDocument(args.file)
+                text = "\n".join(p.text for p in doc.paragraphs)
+            except ImportError:
+                print("错误: 处理docx需要python-docx，请运行 pip install python-docx", file=sys.stderr)
+                sys.exit(1)
+        else:
+            with open(args.file, "r", encoding="utf-8") as f:
+                text = f.read()
         file_path = args.file
     else:
         parser.print_help()
@@ -517,6 +726,13 @@ def main():
         print(format_json_report(result))
     elif args.format == "markdown":
         print(format_markdown_report(result))
+    elif args.format == "docx":
+        output_path = args.output or _default_docx_output(file_path)
+        _generate_docx_with_track_changes(result, text, output_path)
+        print(f"✅ Word修订文档已生成: {output_path}")
+        print(f"   评分: {result.score}/100 {result.grade}")
+        print(f"   命中: {result.hit_count}条 (致命{result.fatal_count}/高{result.high_count}/中{result.medium_count}/低{result.low_count})")
+        print(f"   用Word打开后，逐条接受/拒绝修订建议即可。")
     else:
         print(format_text_report(result, use_color=use_color))
 

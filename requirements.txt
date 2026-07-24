@@ -1,2 +1,3 @@
-# AI 味雷达零依赖，无需安装任何第三方包
-# Python 3.8+ 即可运行
+# AI 味雷达核心功能零依赖
+# Word修订标记功能需要python-docx（可选）
+# pip install python-docx  # 仅--format docx时需要
