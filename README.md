@@ -32,7 +32,7 @@
 git clone https://github.com/charlotty2026/ai-flavor-radar.git
 
 # 或从 Gitee 克隆（国内推荐）
-git clone https://gitee.com/fenglinhuoshanmen/ai-flavor-radar.git
+git clone https://gitee.com/fenglinhuoshanmen/ai-flavor-radar-tool.git
 cd ai-flavor-radar
 ```
 
