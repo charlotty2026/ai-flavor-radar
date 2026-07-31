@@ -140,7 +140,7 @@ def test_no_duplicate_patterns():
     """测试规则文件无重复pattern"""
     rules_dir = os.path.join(PROJECT_ROOT, "rules")
     for fname in os.listdir(rules_dir):
-        if not fname.endswith(".json"):
+        if not fname.endswith(".json") or fname == "whitelist.json":
             continue
         with open(os.path.join(rules_dir, fname), "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -159,7 +159,7 @@ def test_rule_structure():
     valid_severities = {"fatal", "high", "medium", "low"}
 
     for fname in os.listdir(rules_dir):
-        if not fname.endswith(".json"):
+        if not fname.endswith(".json") or fname == "whitelist.json":
             continue
         with open(os.path.join(rules_dir, fname), "r", encoding="utf-8") as f:
             data = json.load(f)

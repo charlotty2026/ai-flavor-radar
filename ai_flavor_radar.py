@@ -51,6 +51,7 @@ class Hit:
     matched_text: str     # 匹配到的原文
     full_line: str        # 完整行原文
     suggestion: str       # 修改建议
+    example: Optional[Dict] = None  # 改前→改后示范（来自规则的examples[0]）
 
 
 @dataclass
@@ -116,8 +117,18 @@ class ScanResult:
 RULES_DIR = Path(__file__).parent / "rules"
 
 
+# 模式中文名映射
+MODE_NAMES = {
+    "bid": "投标方案",
+    "social": "自媒体",
+    "xiaohongshu": "小红书",
+    "email": "邮件",
+    "paper": "学术论文",
+}
+
+
 def load_rules(mode: str) -> List[Dict]:
-    """加载规则：common + (bid 或 social)"""
+    """加载规则：common + 场景规则"""
     rules = []
 
     # 通用规则
@@ -137,6 +148,19 @@ def load_rules(mode: str) -> List[Dict]:
     return rules
 
 
+def load_whitelist() -> List[str]:
+    """加载全局白名单：命中白名单的文本跳过检测（误杀防护）"""
+    whitelist_path = RULES_DIR / "whitelist.json"
+    if not whitelist_path.exists():
+        return []
+    try:
+        with open(whitelist_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data.get("whitelist", [])
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
 # ============================================================
 # 检测引擎
 # ============================================================
@@ -148,6 +172,7 @@ class FlavorRadar:
             global RULES_DIR
             RULES_DIR = Path(custom_rules_dir)
         self.rules = load_rules(mode)
+        self.whitelist = load_whitelist()
         self._apply_mode_overrides(mode)
 
     def _apply_mode_overrides(self, mode: str):
@@ -226,6 +251,13 @@ class FlavorRadar:
 
         return hits
 
+    def _is_whitelisted(self, matched_text: str) -> bool:
+        """判断命中文本是否在白名单内（误杀防护）"""
+        for wl in self.whitelist:
+            if wl and wl in matched_text:
+                return True
+        return False
+
     def _check_rule(self, rule: Dict, line: str, line_num: int) -> List[Hit]:
         """检查单行是否命中规则"""
         hits = []
@@ -242,9 +274,15 @@ class FlavorRadar:
 
         # 正则检查
         patterns = rule.get("patterns", [])
+        examples = rule.get("examples", [])
+        example = examples[0] if examples else None
         for pattern in patterns:
             try:
                 for match in re.finditer(pattern, line):
+                    matched_text = match.group()
+                    # 误杀防护：命中文本含白名单词则跳过
+                    if self._is_whitelisted(matched_text):
+                        continue
                     hits.append(Hit(
                         rule_id=rule["id"],
                         rule_name=rule["name"],
@@ -253,9 +291,10 @@ class FlavorRadar:
                         line_num=line_num,
                         col_start=match.start(),
                         col_end=match.end(),
-                        matched_text=match.group(),
+                        matched_text=matched_text,
                         full_line=line.rstrip(),
                         suggestion=rule.get("suggestion", ""),
+                        example=example,
                     ))
             except re.error:
                 # 正则编译失败，跳过
@@ -356,7 +395,8 @@ def format_text_report(result: ScanResult, use_color: bool = True) -> str:
     lines.append(f"  AI味雷达扫描报告")
     lines.append(f"{'='*60}{c['reset']}")
     lines.append(f"  文件: {result.file_path}")
-    lines.append(f"  模式: {'投标方案' if result.mode == 'bid' else '自媒体'}")
+    mode_name = MODE_NAMES.get(result.mode, result.mode)
+    lines.append(f"  模式: {mode_name}")
     lines.append(f"  行数: {result.total_lines}  字数: {result.total_chars}")
     lines.append("")
 
@@ -396,6 +436,12 @@ def format_text_report(result: ScanResult, use_color: bool = True) -> str:
             lines.append(f"  {color}▸ 第{hit.line_num}行 [{hit.rule_id}] {hit.rule_name}{reset}")
             lines.append(f"    原文: {hit.matched_text}")
             lines.append(f"    建议: {hit.suggestion}")
+            # 展示改前→改后示范
+            example = hit.example
+            if example:
+                lines.append(f"    {c['cyan']}示范:{c['reset']}")
+                lines.append(f"      {c['reset']}改前: {example.get('before', '')}")
+                lines.append(f"      {c['reset']}改后: {example.get('after', '')}")
 
         lines.append("")
 
@@ -443,7 +489,8 @@ def format_markdown_report(result: ScanResult) -> str:
     lines.append(f"| 项目 | 值 |")
     lines.append(f"|------|-----|")
     lines.append(f"| 文件 | `{result.file_path}` |")
-    lines.append(f"| 模式 | {'投标方案' if result.mode == 'bid' else '自媒体'} |")
+    mode_name = MODE_NAMES.get(result.mode, result.mode)
+    lines.append(f"| 模式 | {mode_name} |")
     lines.append(f"| AI味评分 | **{result.score}/100** {result.grade} |")
     lines.append(f"| 总命中 | {result.hit_count}条 |")
     lines.append(f"| 致命/高/中/低 | {result.fatal_count}/{result.high_count}/{result.medium_count}/{result.low_count} |")
@@ -466,6 +513,10 @@ def format_markdown_report(result: ScanResult) -> str:
             lines.append(f"> 原文: `{hit.matched_text}`")
             lines.append(f">")
             lines.append(f"> 建议: {hit.suggestion}")
+            if hit.example:
+                lines.append(f">")
+                lines.append(f"> 改前: {hit.example.get('before', '')}")
+                lines.append(f"> 改后: {hit.example.get('after', '')}")
             lines.append(f"")
 
     return "\n".join(lines)
@@ -682,13 +733,14 @@ def main():
     )
     parser.add_argument("file", nargs="?", help="待检测的文件路径（.md/.txt）")
     parser.add_argument("--stdin", action="store_true", help="从标准输入读取文本")
-    parser.add_argument("--mode", choices=["bid", "social"], default="bid",
-                        help="检测模式: bid=投标方案(默认), social=自媒体")
+    parser.add_argument("--mode", choices=["bid", "social", "xiaohongshu", "email", "paper"], default="bid",
+                        help="检测模式: bid=投标方案(默认), social=自媒体, xiaohongshu=小红书, email=邮件, paper=学术论文")
     parser.add_argument("--format", choices=["text", "json", "markdown", "docx"], default="text",
                         help="输出格式: text(默认), json, markdown, docx(Word修订标记)")
     parser.add_argument("-o", "--output", help="输出文件路径（docx格式必填）")
     parser.add_argument("--no-color", action="store_true", help="禁用终端颜色")
     parser.add_argument("--rules-dir", help="自定义规则目录路径")
+    parser.add_argument("--no-examples", action="store_true", help="报告不显示改前→改后示范")
 
     args = parser.parse_args()
 
@@ -721,6 +773,11 @@ def main():
     # 扫描
     radar = FlavorRadar(mode=args.mode, custom_rules_dir=args.rules_dir)
     result = radar.scan(text, file_path=file_path)
+
+    # --no-examples：报告不显示示范（docx模式始终显示，便于教学）
+    if args.no_examples:
+        for h in result.hits:
+            h.example = None
 
     # 输出
     use_color = not args.no_color and sys.stdout.isatty()
