@@ -653,8 +653,32 @@ def _generate_docx_with_track_changes(result: 'ScanResult', text: str, output_pa
             item.add_run(f'第{hit.line_num}行 [{hit.rule_id}] {hit.rule_name}').bold = True
             item.add_run(f'\n原文: {hit.matched_text}')
             item.add_run(f'\n建议: {hit.suggestion}')
-    
+
+    # 开启Word原生修订模式（Track Changes）
+    # 关键：settings.xml 必须有 <w:trackChanges/>，否则Word/WPS打开时
+    # 不识别为"修订模式"，修订标记可能不显示或不可接受/拒绝
+    _enable_track_changes(doc)
+
     doc.save(output_path)
+
+
+def _enable_track_changes(doc) -> None:
+    """在settings.xml中开启Word原生修订模式（Track Changes）。
+
+    Word原生修订 = settings.xml 里的 <w:trackChanges/> 元素。
+    没有它，w:ins/w:del 标记虽然存在但Word/WPS打开时不会进入修订模式，
+    用户无法在审阅面板里接受/拒绝——这就是"伪修订"和"真修订"的区别。
+    """
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    settings = doc.settings._element  # w:settings
+    # 检查是否已存在，避免重复
+    existing = settings.find(qn('w:trackChanges'))
+    if existing is None:
+        track = OxmlElement('w:trackChanges')
+        # 插入到 settings 的最前面（符合Word惯例：修订标记类元素在前）
+        settings.insert(0, track)
 
 
 def _insert_track_change(paragraph, matched_text: str, hit: 'Hit', 
